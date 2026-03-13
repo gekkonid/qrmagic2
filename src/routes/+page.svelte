@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
+  import { listen } from '@tauri-apps/api/event';
   import { open } from '@tauri-apps/plugin-dialog';
   import type { ImageInfo } from '../types';
 
@@ -7,14 +8,17 @@
   let outputFolder = $state('');
   let images = $state<ImageInfo[]>([]);
 
-  // UI state
   let status = $state('');
   let loading = $state(false);
   let totalImages = $state(0);
   let processedCount = $state(0);
   let copyInsteadOfMove = $state(false);
 
-  /** Prompt the user to select a folder that contains images. */
+  // Lightbox state
+  let lightboxSrc = $state('');
+  let lightboxAlt = $state('');
+  let lightboxIndex = $state(-1);
+
   async function selectImageFolder() {
     const selected = await open({ directory: true, multiple: false });
     if (selected === null) return;
@@ -22,14 +26,12 @@
     await loadImages();
   }
 
-  /** Prompt the user to select the destination folder. */
   async function selectOutputFolder() {
     const selected = await open({ directory: true, multiple: false });
     if (selected === null) return;
     outputFolder = selected;
   }
 
-  /** Scan the selected folder, read metadata and QR codes one image at a time. */
   async function loadImages() {
     if (!imageFolder) return;
     loading = true;
@@ -47,28 +49,29 @@
         return;
       }
 
-      status = `Found ${paths.length} image(s). Processing…`;
+      status = `Found ${paths.length} image(s). Processing with all CPUs…`;
 
-      for (const p of paths) {
-        try {
-          const info = await invoke<ImageInfo>('process_image', { imagePath: p });
-          images.push(info);
-        } catch (e) {
-          console.warn(`Skipping ${p}:`, e);
-        }
+      // Listen for per-image progress events from the parallel backend
+      const unlisten = await listen<ImageInfo>('image-processed', () => {
         processedCount += 1;
-      }
+      });
+
+      // Backend processes all images in parallel and returns the full list
+      const results = await invoke<ImageInfo[]>('process_images', { paths });
+      unlisten();
+
+      // Backend returns results sorted by camera_hash then date
+      images = results;
 
       status = `Done — processed ${images.length} image(s).`;
     } catch (e) {
-      console.error('Error listing images:', e);
+      console.error('Error processing images:', e);
       status = `Error: ${e}`;
     } finally {
       loading = false;
     }
   }
 
-  /** Send the final list to the backend for moving/copying. */
   async function exportImages() {
     if (!outputFolder) {
       alert('Please select an output folder first.');
@@ -96,6 +99,84 @@
   function formatCoord(coord: number | null): string {
     return coord === null ? '' : coord.toFixed(6);
   }
+
+  function focusOnMount(node: HTMLElement) { node.focus(); }
+
+  // --- Lightbox ---
+  async function openLightbox(index: number) {
+    lightboxIndex = index;
+    const img = images[index];
+    lightboxAlt = img.name;
+    lightboxSrc = img.thumbnail;
+    const fullSrc = await invoke<string>('load_full_image', { imagePath: img.path });
+    // Only update if we're still viewing the same image
+    if (lightboxIndex === index) {
+      lightboxSrc = fullSrc;
+    }
+  }
+
+  function closeLightbox() {
+    lightboxSrc = '';
+    lightboxIndex = -1;
+  }
+
+  function lightboxKeydown(e: KeyboardEvent) {
+    if (e.key === 'Escape') { closeLightbox(); return; }
+    if (e.key === 'ArrowLeft' && lightboxIndex > 0) {
+      openLightbox(lightboxIndex - 1);
+    } else if (e.key === 'ArrowRight' && lightboxIndex < images.length - 1) {
+      openLightbox(lightboxIndex + 1);
+    }
+  }
+
+  // --- QR fill from neighbour ---
+  function parseDate(d: string): number | null {
+    if (!d) return null;
+    // EXIF dates look like "2024-01-15 13:45:02" or "2024:01:15 13:45:02"
+    const normalized = d.replace(/^(\d{4}):(\d{2}):(\d{2})/, '$1-$2-$3');
+    const ms = Date.parse(normalized);
+    return isNaN(ms) ? null : ms;
+  }
+
+  function isNeighbour(a: ImageInfo, b: ImageInfo): boolean {
+    if (a.camera_hash !== b.camera_hash) return false;
+    const dateA = parseDate(a.date);
+    const dateB = parseDate(b.date);
+    if (dateA === null || dateB === null) return false;
+    return Math.abs(dateA - dateB) <= 30_000;
+  }
+
+  function fillQrFromNeighbour(index: number) {
+    if (images[index].qr_code.trim()) return;
+
+    // Check previous neighbour
+    if (index > 0 && images[index - 1].qr_code.trim() && isNeighbour(images[index], images[index - 1])) {
+      images[index].qr_code = images[index - 1].qr_code;
+      return;
+    }
+
+    // Check next neighbour
+    if (index < images.length - 1 && images[index + 1].qr_code.trim() && isNeighbour(images[index], images[index + 1])) {
+      images[index].qr_code = images[index + 1].qr_code;
+    }
+  }
+
+  function autoFillAll() {
+    // Forward pass: propagate from earlier images to later ones
+    for (let i = 0; i < images.length; i++) {
+      if (images[i].qr_code.trim()) continue;
+      if (i > 0 && images[i - 1].qr_code.trim() && isNeighbour(images[i], images[i - 1])) {
+        images[i].qr_code = images[i - 1].qr_code;
+      }
+    }
+    // Backward pass: propagate from later images to earlier ones
+    for (let i = images.length - 2; i >= 0; i--) {
+      if (images[i].qr_code.trim()) continue;
+      if (images[i + 1].qr_code.trim() && isNeighbour(images[i], images[i + 1])) {
+        images[i].qr_code = images[i + 1].qr_code;
+      }
+    }
+  }
 </script>
 
 <style>
@@ -105,11 +186,35 @@
   th, td { border: 1px solid #ddd; padding: 0.5rem; text-align: left; }
   th { background: #f4f4f4; }
   img.thumb { width: 80px; height: auto; }
+  .thumb-btn { background: none; border: none; padding: 0; cursor: pointer; }
   input.qr { width: 100%; }
   .progress-section { margin: 1rem 0; }
   progress { width: 100%; height: 1.5rem; }
   .status { margin: 0.5rem 0; color: #555; }
+  tr.missing-qr { background: #fff3cd; }
+
+  /* Lightbox */
+  .lightbox-overlay {
+    position: fixed; inset: 0;
+    background: rgba(0, 0, 0, 0.85);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 1000; cursor: pointer;
+  }
+  .lightbox-overlay img {
+    max-width: 90vw; max-height: 90vh;
+    object-fit: contain;
+    border-radius: 4px;
+    box-shadow: 0 0 40px rgba(0,0,0,0.5);
+  }
 </style>
+
+<!-- Lightbox -->
+{#if lightboxSrc}
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+  <div class="lightbox-overlay" onclick={closeLightbox} onkeydown={lightboxKeydown} role="button" tabindex="0" use:focusOnMount>
+    <img src={lightboxSrc} alt={lightboxAlt} />
+  </div>
+{/if}
 
 <div class="container">
   <h1>QR-Code Image Sorter</h1>
@@ -121,6 +226,7 @@
       <input type="checkbox" bind:checked={copyInsteadOfMove} />
       Copy instead of move
     </label>
+    <button onclick={autoFillAll} disabled={loading || !images.length}>Auto-fill all</button>
     <button onclick={exportImages} disabled={loading || !images.length}>Export</button>
   </div>
 
@@ -151,18 +257,23 @@
           <th>Date</th>
           <th>Lat</th>
           <th>Long</th>
-          <th>Camera Serial</th>
         </tr>
       </thead>
       <tbody>
-        {#each images as img}
-          <tr>
-            <td><img class="thumb" src={img.thumbnail} alt="thumb" /></td>
-            <td><input class="qr" bind:value={img.qr_code} placeholder="Enter QR…" /></td>
+        {#each images as img, i}
+          <tr class:missing-qr={!img.qr_code.trim()}>
+            <td><button class="thumb-btn" onclick={() => openLightbox(i)}><img class="thumb" src={img.thumbnail} alt={img.name} /></button></td>
+            <td>
+              <input
+                class="qr"
+                bind:value={img.qr_code}
+                placeholder="Enter QR…"
+                onfocus={() => fillQrFromNeighbour(i)}
+              />
+            </td>
             <td>{img.date}</td>
             <td>{formatCoord(img.latitude)}</td>
             <td>{formatCoord(img.longitude)}</td>
-            <td>{img.camera_serial}</td>
           </tr>
         {/each}
       </tbody>
