@@ -7,7 +7,11 @@
   let imageFolder: string = '';
   let outputFolder: string = '';
   let images: ImageInfo[] = [];
-  let loading = false;
+
+  // UI state
+  let loading = false;          // true while processing the whole batch
+  let totalImages = 0;          // total number of images to process
+  let processedCount = 0;       // how many have been processed so far
   let copyInsteadOfMove = false;
 
   /** Prompt the user to select a folder that contains images. */
@@ -25,10 +29,13 @@
     outputFolder = selected;
   }
 
-  /** Scan the selected folder, read metadata and QR codes. */
+  /** Scan the selected folder, read metadata and QR codes **one image at a time**. */
   async function loadImages() {
     if (!imageFolder) return;
     loading = true;
+    images = [];
+    processedCount = 0;
+
     try {
       // Recursively collect image paths (basic filter for common extensions)
       const { readDirRecursive } = await import('@tauri-apps/api/fs');
@@ -37,7 +44,14 @@
         .filter(e => !e.children && /\.(jpe?g|png|tiff?|bmp|heif|heic)$/i.test(e.path))
         .map(e => e.path);
 
-      images = await invoke<ImageInfo[]>('process_images', { imagePaths: paths });
+      totalImages = paths.length;
+
+      // Process each image sequentially so the progress bar reflects real work.
+      for (const p of paths) {
+        const info = await invoke<ImageInfo>('process_image', { imagePath: p });
+        images = [...images, info]; // trigger reactivity
+        processedCount += 1;
+      }
     } catch (e) {
       console.error('Error processing images:', e);
     } finally {
@@ -86,6 +100,7 @@
   th { background: #f4f4f4; }
   img.thumb { width: 80px; height: auto; }
   input.qr { width: 100%; }
+  progress { width: 100%; height: 1.5rem; margin-top: 0.5rem; }
 </style>
 
 <div class="container">
@@ -103,6 +118,7 @@
 
   {#if loading}
     <p>Processing images… please wait.</p>
+    <progress max={totalImages} value={processedCount}></progress>
   {:else if images.length}
     <table>
       <thead>
