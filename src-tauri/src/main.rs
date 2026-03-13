@@ -7,10 +7,10 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 
-use serde::Serialize;
-use exif::{Reader as ExifReader, Tag, In};
-use image::GenericImageView;
 use bardecoder::default_decoder;
+use exif::{In, Reader as ExifReader, Tag};
+use image::GenericImageView;
+use serde::Serialize;
 
 /// Information about a single image that will be sent to the frontend.
 #[derive(Debug, Serialize, Clone)]
@@ -43,12 +43,9 @@ async fn process_image(image_path: String) -> Result<ImageInfo, String> {
     }
 
     // ---- 1. Read EXIF metadata -------------------------------------------------
-    let file = fs::File::open(path)
-        .map_err(|e| format!("Failed to open {}: {}", image_path, e))?;
+    let file = fs::File::open(path).map_err(|e| format!("Failed to open {}: {}", image_path, e))?;
     let mut bufreader = std::io::BufReader::new(&file);
-    let exif = ExifReader::new()
-        .read_from_container(&mut bufreader)
-        .ok();
+    let exif = ExifReader::new().read_from_container(&mut bufreader).ok();
 
     // Helper closure to fetch a tag as string
     let get_tag = |tag| {
@@ -77,11 +74,7 @@ async fn process_image(image_path: String) -> Result<ImageInfo, String> {
                 .and_then(|f| f.value.get_rational_vec().ok())
                 .and_then(|vec| {
                     if vec.len() == 3 {
-                        Some(
-                            (vec[0].to_f64()
-                                + vec[1].to_f64() / 60.0
-                                + vec[2].to_f64() / 3600.0),
-                        )
+                        Some((vec[0].to_f64() + vec[1].to_f64() / 60.0 + vec[2].to_f64() / 3600.0))
                     } else {
                         None
                     }
@@ -115,8 +108,8 @@ async fn process_image(image_path: String) -> Result<ImageInfo, String> {
     };
 
     // ---- 2. Generate thumbnail -------------------------------------------------
-    let img = image::open(path)
-        .map_err(|e| format!("Failed to load image {}: {}", image_path, e))?;
+    let img =
+        image::open(path).map_err(|e| format!("Failed to load image {}: {}", image_path, e))?;
     let thumbnail = img.thumbnail(120, 120);
     let mut thumb_buf = Vec::new();
     thumbnail
@@ -141,11 +134,7 @@ async fn process_image(image_path: String) -> Result<ImageInfo, String> {
     // ---- 4. Assemble result ----------------------------------------------------
     Ok(ImageInfo {
         path: image_path.clone(),
-        name: path
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .to_string(),
+        name: path.file_name().unwrap().to_string_lossy().to_string(),
         thumbnail: thumbnail_data_url,
         qr_code,
         date,
@@ -180,19 +169,11 @@ async fn move_images(
         let dest_path = target_dir.join(&img.name);
 
         if copy_instead_of_move {
-            fs::copy(&src_path, &dest_path).map_err(|e| {
-                format!(
-                    "Failed to copy {:?} → {:?}: {}",
-                    src_path, dest_path, e
-                )
-            })?;
+            fs::copy(&src_path, &dest_path)
+                .map_err(|e| format!("Failed to copy {:?} → {:?}: {}", src_path, dest_path, e))?;
         } else {
-            fs::rename(&src_path, &dest_path).map_err(|e| {
-                format!(
-                    "Failed to move {:?} → {:?}: {}",
-                    src_path, dest_path, e
-                )
-            })?;
+            fs::rename(&src_path, &dest_path)
+                .map_err(|e| format!("Failed to move {:?} → {:?}: {}", src_path, dest_path, e))?;
         }
     }
 
@@ -201,10 +182,8 @@ async fn move_images(
 
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![
-            process_image,
-            move_images
-        ])
+        .plugin(tauri_plugin_fs::init())
+        .invoke_handler(tauri::generate_handler![process_image, move_images])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

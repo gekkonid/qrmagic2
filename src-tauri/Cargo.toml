@@ -11,7 +11,7 @@ repository = ""
 tauri = { version = "2", features = [] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-kamadak_exif = "0.6"
+kamadak-exif = "0.6"
 image = "0.24"
 bardecoder = "0.5"
 base64 = "0.21"

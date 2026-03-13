@@ -4,6 +4,9 @@ import { sveltekit } from "@sveltejs/kit/vite";
 // https://vite.dev/config/
 export default defineConfig(async () => ({
   plugins: [sveltekit()],
+  build: {
+        outDir: 'dist'
+  },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //

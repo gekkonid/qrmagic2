@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
+  import { readDir } from '@tauri-apps/plugin-fs';
   import { open } from '@tauri-apps/plugin-dialog';
   import type { ImageInfo } from '../types';
 
@@ -38,8 +39,7 @@
 
     try {
       // Recursively collect image paths (basic filter for common extensions)
-      const { readDirRecursive } = await import('@tauri-apps/api/fs');
-      const entries = await readDirRecursive(imageFolder);
+      const entries = await readDir(imageFolder);
       const paths = entries
         .filter(e => !e.children && /\.(jpe?g|png|tiff?|bmp|heif|heic)$/i.test(e.path))
         .map(e => e.path);
