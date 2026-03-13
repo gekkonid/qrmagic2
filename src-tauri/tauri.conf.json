@@ -27,10 +27,10 @@
       }
     }
   },
-  "productName": "QR Image Sorter",
-  "mainBinaryName": "QR Image Sorter",
+  "productName": "QRMagic2",
+  "mainBinaryName": "QRMagic2",
   "version": "0.1.0",
-  "identifier": "com.example.qrimagesorter",
+  "identifier": "com.gekkonid.qrmagic2",
   "plugins": {},
   "app": {
     "security": {
@@ -38,7 +38,7 @@
     },
     "windows": [
       {
-        "title": "QR Image Sorter",
+        "title": "QRMagic2",
         "width": 1000,
         "height": 800,
         "resizable": true,

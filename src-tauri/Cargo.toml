@@ -1,7 +1,7 @@
 [package]
-name = "qrmagic"
+name = "qrmagic2"
 version = "0.1.0"
-authors = ["Your Name <you@example.com>"]
+authors = ["Kevin Murray <foss@gekkonid.com>"]
 edition = "2021"
 description = "QR‑code image sorter built with Tauri and Svelte"
 license = "AGPL3"
