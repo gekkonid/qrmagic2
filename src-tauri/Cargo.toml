@@ -16,6 +16,7 @@ image = "0.24"
 bardecoder = "0.5"
 base64 = "0.21"
 tauri-plugin-fs = "2"
+tauri-plugin-dialog = "2"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
