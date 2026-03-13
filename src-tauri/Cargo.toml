@@ -1,5 +1,5 @@
 [package]
-name = "qr_image_sorter"
+name = "qrmagic"
 version = "0.1.0"
 authors = ["Your Name <you@example.com>"]
 edition = "2021"

@@ -1,21 +1,13 @@
-//! Tauri backend for the QR‑code image sorter.
-//! Provides two commands:
-//! 1. `process_images` – reads metadata, scans QR codes and returns a list of ImageInfo.
-//! 2. `move_images`   – moves/copies images into `$output_dir/<qr_code>/<original_name>`.
-
 #![cfg_attr(
     all(not(debug_assertions), target_os = "windows"),
     windows_subsystem = "windows"
 )]
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::fs;
 use std::io::Write;
 
 use serde::Serialize;
-use tauri::api::dialog::FileDialogBuilder;
-use tauri::{Manager, State};
-
 use exif::{Reader as ExifReader, Tag, In};
 use image::GenericImageView;
 use bardecoder::default_decoder;
@@ -31,7 +23,7 @@ struct ImageInfo {
     thumbnail: String,
     /// Detected QR code (empty string if none found).
     qr_code: String,
-    /// Capture date in ISO‑8601 format (or empty if missing).
+    /// Capture date in ISO‑8601 format (or empty string).
     date: String,
     /// Latitude in decimal degrees (or null).
     latitude: Option<f64>,
@@ -41,15 +33,8 @@ struct ImageInfo {
     camera_serial: String,
 }
 
-/// Shared configuration (e.g., whether to copy instead of move).
-struct Config {
-    copy_instead_of_move: bool,
-}
-
 #[tauri::command]
-async fn process_images(
-    image_paths: Vec<String>,
-) -> Result<Vec<ImageInfo>, String> {
+async fn process_images(image_paths: Vec<String>) -> Result<Vec<ImageInfo>, String> {
     let mut results = Vec::new();
 
     for img_path in image_paths {
@@ -59,13 +44,14 @@ async fn process_images(
         }
 
         // ---- 1. Read EXIF metadata -------------------------------------------------
-        let file = fs::File::open(path).map_err(|e| format!("Failed to open {}: {}", img_path, e))?;
+        let file = fs::File::open(path)
+            .map_err(|e| format!("Failed to open {}: {}", img_path, e))?;
         let mut bufreader = std::io::BufReader::new(&file);
         let exif = ExifReader::new()
             .read_from_container(&mut bufreader)
             .ok();
 
-        // Helper closures
+        // Helper closure to fetch a tag as string
         let get_tag = |tag| {
             exif.as_ref()
                 .and_then(|exif| exif.get_field(tag, In::PRIMARY))
@@ -75,62 +61,45 @@ async fn process_images(
         // Date
         let date = get_tag(Tag::DateTimeOriginal).unwrap_or_default();
 
-        // Camera serial (many cameras store it under Tag::BodySerialNumber or Tag::SerialNumber)
+        // Camera serial (many cameras store it under BodySerialNumber or SerialNumber)
         let camera_serial = get_tag(Tag::BodySerialNumber)
             .or_else(|| get_tag(Tag::SerialNumber))
             .unwrap_or_default();
 
         // GPS
-        let (latitude, longitude) = if let Some(gps) = exif.as_ref().and_then(|e| e.get_field(Tag::GPSLatitude, In::PRIMARY)) {
-            // Use the `exif` crate's helper to convert to decimal degrees
-            let lat = exif
-                .as_ref()
-                .and_then(|e| e.get_field(Tag::GPSLatitude, In::PRIMARY))
-                .and_then(|f| f.value.get_rational_vec().ok())
-                .and_then(|vec| {
-                    if vec.len() == 3 {
-                        Some(
-                            (vec[0].to_f64() + vec[1].to_f64() / 60.0 + vec[2].to_f64() / 3600.0)
-                        )
-                    } else {
-                        None
-                    }
-                });
+        let (latitude, longitude) = if let Some(_) = exif.as_ref().and_then(|e| e.get_field(Tag::GPSLatitude, In::PRIMARY)) {
+            // Helper to convert rational vec to decimal degrees
+            let to_deg = |tag| {
+                exif.as_ref()
+                    .and_then(|e| e.get_field(tag, In::PRIMARY))
+                    .and_then(|f| f.value.get_rational_vec().ok())
+                    .and_then(|vec| {
+                        if vec.len() == 3 {
+                            Some(
+                                (vec[0].to_f64()
+                                    + vec[1].to_f64() / 60.0
+                                    + vec[2].to_f64() / 3600.0)
+                            )
+                        } else {
+                            None
+                        }
+                    })
+            };
 
-            let lon = exif
-                .as_ref()
-                .and_then(|e| e.get_field(Tag::GPSLongitude, In::PRIMARY))
-                .and_then(|f| f.value.get_rational_vec().ok())
-                .and_then(|vec| {
-                    if vec.len() == 3 {
-                        Some(
-                            (vec[0].to_f64() + vec[1].to_f64() / 60.0 + vec[2].to_f64() / 3600.0)
-                        )
-                    } else {
-                        None
-                    }
-                });
+            let mut lat = to_deg(Tag::GPSLatitude);
+            let mut lon = to_deg(Tag::GPSLongitude);
 
             // Apply sign based on N/S/E/W
-            let lat = match exif
-                .as_ref()
-                .and_then(|e| e.get_field(Tag::GPSLatitudeRef, In::PRIMARY))
-                .map(|f| f.value.display_as(Tag::GPSLatitudeRef).to_string())
-                .as_deref()
-            {
-                Some("S") => lat.map(|v| -v),
-                _ => lat,
-            };
-
-            let lon = match exif
-                .as_ref()
-                .and_then(|e| e.get_field(Tag::GPSLongitudeRef, In::PRIMARY))
-                .map(|f| f.value.display_as(Tag::GPSLongitudeRef).to_string())
-                .as_deref()
-            {
-                Some("W") => lon.map(|v| -v),
-                _ => lon,
-            };
+            if let Some(ref f) = exif.as_ref().and_then(|e| e.get_field(Tag::GPSLatitudeRef, In::PRIMARY)) {
+                if f.value.display_as(Tag::GPSLatitudeRef).to_string() == "S" {
+                    lat = lat.map(|v| -v);
+                }
+            }
+            if let Some(ref f) = exif.as_ref().and_then(|e| e.get_field(Tag::GPSLongitudeRef, In::PRIMARY)) {
+                if f.value.display_as(Tag::GPSLongitudeRef).to_string() == "W" {
+                    lon = lon.map(|v| -v);
+                }
+            }
 
             (lat, lon)
         } else {
@@ -138,7 +107,8 @@ async fn process_images(
         };
 
         // ---- 2. Generate thumbnail -------------------------------------------------
-        let img = image::open(path).map_err(|e| format!("Failed to load image {}: {}", img_path, e))?;
+        let img = image::open(path)
+            .map_err(|e| format!("Failed to load image {}: {}", img_path, e))?;
         let thumbnail = img.thumbnail(120, 120);
         let mut thumb_buf = Vec::new();
         thumbnail
@@ -195,7 +165,7 @@ async fn move_images(
     }
 
     for img in images {
-        // If the QR code is still empty, skip – the UI should force the user to fill it.
+        // Skip entries without a QR code – UI should enforce filling them.
         if img.qr_code.trim().is_empty() {
             continue;
         }
