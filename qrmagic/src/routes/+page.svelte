@@ -1,156 +1,134 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/tauri";
+  import { onMount } from 'svelte';
+  import { invoke } from '@tauri-apps/api/tauri';
+  import { open } from '@tauri-apps/api/dialog';
+  import type { ImageInfo } from '../types';
 
-  let name = $state("");
-  let greetMsg = $state("");
+  let imageFolder: string = '';
+  let outputFolder: string = '';
+  let images: ImageInfo[] = [];
+  let loading = false;
+  let copyInsteadOfMove = false;
 
-  async function greet(event: Event) {
-    event.preventDefault();
-    // Learn more about Tauri commands at https://v1.tauri.app/v1/guides/features/command
-    greetMsg = await invoke("greet", { name });
+  /** Prompt the user to select a folder that contains images. */
+  async function selectImageFolder() {
+    const selected = await open({ directory: true, multiple: false });
+    if (Array.isArray(selected) || selected === null) return;
+    imageFolder = selected;
+    await loadImages();
+  }
+
+  /** Prompt the user to select the destination folder. */
+  async function selectOutputFolder() {
+    const selected = await open({ directory: true, multiple: false });
+    if (Array.isArray(selected) || selected === null) return;
+    outputFolder = selected;
+  }
+
+  /** Scan the selected folder, read metadata and QR codes. */
+  async function loadImages() {
+    if (!imageFolder) return;
+    loading = true;
+    try {
+      // Recursively collect image paths (basic filter for common extensions)
+      const { readDirRecursive } = await import('@tauri-apps/api/fs');
+      const entries = await readDirRecursive(imageFolder);
+      const paths = entries
+        .filter(e => !e.children && /\.(jpe?g|png|tiff?|bmp|heif|heic)$/i.test(e.path))
+        .map(e => e.path);
+
+      images = await invoke<ImageInfo[]>('process_images', { imagePaths: paths });
+    } catch (e) {
+      console.error('Error processing images:', e);
+    } finally {
+      loading = false;
+    }
+  }
+
+  /** Send the final list to the backend for moving/copying. */
+  async function exportImages() {
+    if (!outputFolder) {
+      alert('Please select an output folder first.');
+      return;
+    }
+    // Ensure every row has a QR code – simple validation
+    const missing = images.filter(i => !i.qr_code.trim());
+    if (missing.length) {
+      alert(`There are ${missing.length} images without a QR code. Please fill them in.`);
+      return;
+    }
+
+    try {
+      await invoke('move_images', {
+        images,
+        outputDir: outputFolder,
+        copyInsteadOfMove: copyInsteadOfMove
+      });
+      alert('Export completed!');
+    } catch (e) {
+      console.error('Export failed:', e);
+      alert('Export failed – see console for details.');
+    }
+  }
+
+  /** Simple helper to format latitude/longitude. */
+  function formatCoord(coord: number | null): string {
+    return coord === null ? '' : coord.toFixed(6);
   }
 </script>
 
-<main class="container">
-  <h1>Welcome to Tauri + Svelte</h1>
-
-  <div class="row">
-    <a href="https://vite.dev" target="_blank">
-      <img src="/vite.svg" class="logo vite" alt="Vite Logo" />
-    </a>
-    <a href="https://tauri.app" target="_blank">
-      <img src="/tauri.svg" class="logo tauri" alt="Tauri Logo" />
-    </a>
-    <a href="https://svelte.dev" target="_blank">
-      <img src="/svelte.svg" class="logo svelte-kit" alt="SvelteKit Logo" />
-    </a>
-  </div>
-  <p>Click on the Tauri, Vite, and SvelteKit logos to learn more.</p>
-
-  <form class="row" onsubmit={greet}>
-    <input id="greet-input" placeholder="Enter a name..." bind:value={name} />
-    <button type="submit">Greet</button>
-  </form>
-  <p>{greetMsg}</p>
-</main>
-
 <style>
-.logo.vite:hover {
-  filter: drop-shadow(0 0 2em #747bff);
-}
-
-.logo.svelte-kit:hover {
-  filter: drop-shadow(0 0 2em #ff3e00);
-}
-
-:root {
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-  font-size: 16px;
-  line-height: 24px;
-  font-weight: 400;
-
-  color: #0f0f0f;
-  background-color: #f6f6f6;
-
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  -webkit-text-size-adjust: 100%;
-}
-
-.container {
-  margin: 0;
-  padding-top: 10vh;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  text-align: center;
-}
-
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: 0.75s;
-}
-
-.logo.tauri:hover {
-  filter: drop-shadow(0 0 2em #24c8db);
-}
-
-.row {
-  display: flex;
-  justify-content: center;
-}
-
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
-}
-
-a:hover {
-  color: #535bf2;
-}
-
-h1 {
-  text-align: center;
-}
-
-input,
-button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  color: #0f0f0f;
-  background-color: #ffffff;
-  transition: border-color 0.25s;
-  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.2);
-}
-
-button {
-  cursor: pointer;
-}
-
-button:hover {
-  border-color: #396cd8;
-}
-button:active {
-  border-color: #396cd8;
-  background-color: #e8e8e8;
-}
-
-input,
-button {
-  outline: none;
-}
-
-#greet-input {
-  margin-right: 5px;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #f6f6f6;
-    background-color: #2f2f2f;
-  }
-
-  a:hover {
-    color: #24c8db;
-  }
-
-  input,
-  button {
-    color: #ffffff;
-    background-color: #0f0f0f98;
-  }
-  button:active {
-    background-color: #0f0f0f69;
-  }
-}
-
+  .container { padding: 1rem; font-family: sans-serif; }
+  .toolbar { margin-bottom: 1rem; }
+  button { margin-right: 0.5rem; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { border: 1px solid #ddd; padding: 0.5rem; text-align: left; }
+  th { background: #f4f4f4; }
+  img.thumb { width: 80px; height: auto; }
+  input.qr { width: 100%; }
 </style>
+
+<div class="container">
+  <h1>QR‑Code Image Sorter</h1>
+
+  <div class="toolbar">
+    <button on:click={selectImageFolder}>📂 Choose Image Folder</button>
+    <button on:click={selectOutputFolder}>📁 Choose Output Folder</button>
+    <label>
+      <input type="checkbox" bind:checked={copyInsteadOfMove} />
+      Copy instead of move
+    </label>
+    <button on:click={exportImages} disabled={loading || !images.length}>🚚 Export</button>
+  </div>
+
+  {#if loading}
+    <p>Processing images… please wait.</p>
+  {:else if images.length}
+    <table>
+      <thead>
+        <tr>
+          <th>Thumb</th>
+          <th>QR Code (editable)</th>
+          <th>Date</th>
+          <th>Lat</th>
+          <th>Long</th>
+          <th>Camera Serial</th>
+        </tr>
+      </thead>
+      <tbody>
+        {#each images as img}
+          <tr>
+            <td><img class="thumb" src={img.thumbnail} alt="thumb" /></td>
+            <td><input class="qr" bind:value={img.qr_code} placeholder="Enter QR…" /></td>
+            <td>{img.date}</td>
+            <td>{formatCoord(img.latitude)}</td>
+            <td>{formatCoord(img.longitude)}</td>
+            <td>{img.camera_serial}</td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
+  {:else}
+    <p>No images loaded yet.</p>
+  {/if}
+</div>
