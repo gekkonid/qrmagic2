@@ -29,7 +29,7 @@
   },
   "productName": "QRMagic2",
   "mainBinaryName": "QRMagic2",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "identifier": "com.gekkonid.qrmagic2",
   "plugins": {},
   "app": {

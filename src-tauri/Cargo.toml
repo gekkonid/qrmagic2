@@ -1,6 +1,6 @@
 [package]
 name = "qrmagic2"
-version = "0.1.0"
+version = "0.2.1"
 authors = ["Kevin Murray <foss@gekkonid.com>"]
 edition = "2021"
 description = "QR‑code image sorter built with Tauri and Svelte"
