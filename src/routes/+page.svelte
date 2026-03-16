@@ -1,7 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
-  import { open } from '@tauri-apps/plugin-dialog';
+  import { ask, open } from '@tauri-apps/plugin-dialog';
   import type { ImageInfo } from '../types';
 
   let imageFolder = $state('');
@@ -79,8 +79,11 @@
     }
     const missing = images.filter(i => !i.qr_code.trim());
     if (missing.length) {
-      alert(`There are ${missing.length} images without a QR code. Please fill them in.`);
-      return;
+      const proceed = await ask(
+        `There are ${missing.length} images without a QR code. Press No to abort export and fill them in, or Yes to continue.`,
+        { title: 'Missing QR codes', kind: 'warning' }
+      );
+      if (!proceed) return;
     }
 
     try {
@@ -94,10 +97,6 @@
       console.error('Export failed:', e);
       alert(`Export failed: ${e}`);
     }
-  }
-
-  function formatCoord(coord: number | null): string {
-    return coord === null ? '' : coord.toFixed(6);
   }
 
   function focusOnMount(node: HTMLElement) { node.focus(); }
@@ -221,7 +220,7 @@
 
   <div class="toolbar">
     <button onclick={selectImageFolder} disabled={loading}>Choose Image Folder</button>
-    <button onclick={selectOutputFolder} disabled={loading}>Choose Output Folder</button>
+    <button onclick={selectOutputFolder}>Choose Output Folder</button>
     <label>
       <input type="checkbox" bind:checked={copyInsteadOfMove} />
       Copy instead of move
@@ -255,14 +254,13 @@
           <th>Thumb</th>
           <th>QR Code (editable)</th>
           <th>Date</th>
-          <th>Lat</th>
-          <th>Long</th>
+          <th>Location</th>
         </tr>
       </thead>
       <tbody>
         {#each images as img, i}
           <tr class:missing-qr={!img.qr_code.trim()}>
-            <td><button class="thumb-btn" onclick={() => openLightbox(i)}><img class="thumb" src={img.thumbnail} alt={img.name} /></button></td>
+            <td><button class="thumb-btn" tabindex="-1" onclick={() => openLightbox(i)}><img class="thumb" src={img.thumbnail} alt={img.name} /></button></td>
             <td>
               <input
                 class="qr"
@@ -272,8 +270,11 @@
               />
             </td>
             <td>{img.date}</td>
-            <td>{formatCoord(img.latitude)}</td>
-            <td>{formatCoord(img.longitude)}</td>
+            <td>
+              {#if img.latitude !== null && img.longitude !== null}
+                <a href="https://www.openstreetmap.org/#map=12/{img.latitude.toFixed(6)}/{img.longitude.toFixed(6)}" target="_blank">{img.latitude.toFixed(6)} {img.longitude.toFixed(6)}</a>
+              {/if}
+            </td>
           </tr>
         {/each}
       </tbody>
