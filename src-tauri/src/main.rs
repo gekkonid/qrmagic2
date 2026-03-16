@@ -117,12 +117,12 @@ fn collect_images(dir: &Path, results: &mut Vec<String>) -> Result<(), Error> {
     Ok(())
 }
 
-/// Try to decode a QR code from a DynamicImage using rxing (Rust port of ZXing).
+/// Try to decode a QR code from a DynamicImage using rxing
 /// Returns the first successfully decoded string, or None.
-fn try_decode_qr(img: &DynamicImage) -> Option<String> {
+fn try_decode_qr(img: &DynamicImage, harder: bool) -> Option<String> {
     let hints = rxing::DecodeHints {
         PossibleFormats: Some([BarcodeFormat::QR_CODE].into_iter().collect()),
-        TryHarder: Some(true),
+        TryHarder: Some(harder),
         ..Default::default()
     };
     let source = rxing::BufferedImageLuminanceSource::new(img.clone());
@@ -202,37 +202,37 @@ fn autocontrast(img: &DynamicImage) -> DynamicImage {
 }
 
 /// Multi-preprocessing QR decode pipeline from the blog post.
-/// Tries scales [0.5, 0.2, 0.1], and for each scale tries:
+///
+/// Tries scales [0.5, 0.2, 0.1, 1.0], and for each scale tries:
 ///   1. Plain scaled image
 ///   2. Sharpness variants [0.1, 0.5, 2.0]
 ///   3. Autocontrast
-/// Scale 1.0 (full resolution) is skipped — the blog post showed it has the
-/// worst success rate AND it is by far the slowest (rxing TryHarder on a 24MP
-/// image can take minutes per attempt).
+///   
 /// Returns the first successfully decoded QR code, or empty string.
 fn decode_qr_with_preprocessing(img: &DynamicImage) -> String {
-    let scalars: &[f64] = &[0.5, 0.2, 0.1];
+    let scalars: &[f64] = &[0.5, 0.2, 0.1, 1.0];
     let sharpness_factors: &[f64] = &[0.1, 0.5, 2.0];
 
     for &scalar in scalars {
         let scaled = scale_image(img, scalar);
+        let try_harder =  scalar != 1.0;
 
         // Try plain scaled
-        if let Some(qr) = try_decode_qr(&scaled) {
+        if let Some(qr) = try_decode_qr(&scaled, try_harder) {
             return qr;
         }
 
         // Try sharpness/blur variants
         for &sharpness in sharpness_factors {
             let adjusted = adjust_sharpness(&scaled, sharpness);
-            if let Some(qr) = try_decode_qr(&adjusted) {
+            if let Some(qr) = try_decode_qr(&adjusted,  try_harder) {
                 return qr;
             }
         }
 
         // Try autocontrast
         let contrasted = autocontrast(&scaled);
-        if let Some(qr) = try_decode_qr(&contrasted) {
+        if let Some(qr) = try_decode_qr(&contrasted,  try_harder) {
             return qr;
         }
     }
@@ -348,7 +348,7 @@ fn process_single_image(image_path: &str) -> Result<ImageInfo, Error> {
 
     // ---- 2. Generate thumbnail -------------------------------------------------
     let img = open_image(path)?;
-    let thumbnail = img.thumbnail(120, 120);
+    let thumbnail = img.thumbnail(320, 320);
     let mut thumb_buf = Vec::new();
     thumbnail
         .write_to(
@@ -468,9 +468,9 @@ async fn move_images(
         let dest_path = target_dir.join(&img.name);
 
         if copy_instead_of_move {
-            fs::copy(&src_path, &dest_path)?;
+            fs::copy(src_path, dest_path)?;
         } else {
-            fs::rename(&src_path, &dest_path)?;
+            fs::rename(src_path, dest_path)?;
         }
     }
 
