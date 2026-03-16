@@ -7,6 +7,7 @@
   let imageFolder = $state('');
   let outputFolder = $state('');
   let images = $state<ImageInfo[]>([]);
+  let excluded = $state<boolean[]>([]);
 
   let status = $state('');
   let loading = $state(false);
@@ -49,7 +50,7 @@
         return;
       }
 
-      status = `Found ${paths.length} image(s). Processing with all CPUs…`;
+      status = `Found ${paths.length} image(s). Scanning all images...`;
 
       // Listen for per-image progress events from the parallel backend
       const unlisten = await listen<ImageInfo>('image-processed', () => {
@@ -62,6 +63,7 @@
 
       // Backend returns results sorted by camera_hash then date
       images = results;
+      excluded = new Array(results.length).fill(false);
 
       status = `Done — processed ${images.length} image(s).`;
     } catch (e) {
@@ -77,7 +79,8 @@
       alert('Please select an output folder first.');
       return;
     }
-    const missing = images.filter(i => !i.qr_code.trim());
+    const toExport = images.filter((_, i) => !excluded[i]);
+    const missing = toExport.filter(i => !i.qr_code.trim());
     if (missing.length) {
       const proceed = await ask(
         `There are ${missing.length} images without a QR code. Press No to abort export and fill them in, or Yes to continue.`,
@@ -88,7 +91,7 @@
 
     try {
       await invoke('move_images', {
-        images,
+        images: toExport,
         outputDir: outputFolder,
         copyInsteadOfMove,
       });
@@ -191,6 +194,10 @@
   progress { width: 100%; height: 1.5rem; }
   .status { margin: 0.5rem 0; color: #555; }
   tr.missing-qr { background: #fff3cd; }
+  tr.excluded { opacity: 0.4; }
+  td.exclude-cell { width: 1%; white-space: nowrap; }
+  .exclude-btn { cursor: pointer; font-size: 1.2rem; opacity: 0.3; padding: 0.2rem 0.4rem; }
+  .exclude-btn.active { opacity: 1; }
 
   /* Lightbox */
   .lightbox-overlay {
@@ -216,7 +223,8 @@
 {/if}
 
 <div class="container">
-  <h1>QR-Code Image Sorter</h1>
+  <h1>QRMagic2</h1>
+  <p>Gekkonid Scientific</p>
 
   <div class="toolbar">
     <button onclick={selectImageFolder} disabled={loading}>Choose Image Folder</button>
@@ -252,6 +260,7 @@
       <thead>
         <tr>
           <th>Thumb</th>
+          <th></th>
           <th>QR Code (editable)</th>
           <th>Date</th>
           <th>Location</th>
@@ -259,8 +268,9 @@
       </thead>
       <tbody>
         {#each images as img, i}
-          <tr class:missing-qr={!img.qr_code.trim()}>
+          <tr class:missing-qr={!img.qr_code.trim() && !excluded[i]} class:excluded={excluded[i]}>
             <td><button class="thumb-btn" tabindex="-1" onclick={() => openLightbox(i)}><img class="thumb" src={img.thumbnail} alt={img.name} /></button></td>
+            <td class="exclude-cell"><button class="exclude-btn" class:active={excluded[i]} tabindex="-1" title="Exclude from export" onclick={() => excluded[i] = !excluded[i]}>🗑</button></td>
             <td>
               <input
                 class="qr"
