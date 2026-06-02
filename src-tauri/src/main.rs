@@ -8,6 +8,7 @@ use std::fmt;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
+use std::time::{Instant};
 
 use base64::Engine;
 use exif::{In, Reader as ExifReader, Tag};
@@ -119,20 +120,33 @@ fn collect_images(dir: &Path, results: &mut Vec<String>) -> Result<(), Error> {
 
 /// Try to decode a QR code from a DynamicImage using rxing
 /// Returns the first successfully decoded string, or None.
-fn try_decode_qr(img: &DynamicImage, harder: bool) -> Option<String> {
-    let hints = rxing::DecodeHints {
-        PossibleFormats: Some([BarcodeFormat::QR_CODE].into_iter().collect()),
-        TryHarder: Some(harder),
-        ..Default::default()
-    };
-    let source = rxing::BufferedImageLuminanceSource::new(img.clone());
-    let mut bitmap = rxing::BinaryBitmap::new(rxing::common::HybridBinarizer::new(source));
-    let mut reader = rxing::MultiFormatReader::default();
-    match reader.decode_with_hints(&mut bitmap, &hints) {
-        Ok(result) => {
-            let text = result.getText().to_string();
-            if text.is_empty() { None } else { Some(text) }
-        }
+fn try_decode_qr(img: &DynamicImage, harder: bool, timeout: std::time::Duration) -> Option<String> {
+    // rxing has no cancellation, so run on a thread and use a channel
+    // with a recv timeout.  If the thread exceeds the deadline it is
+    // detached and will eventually finish on its own.
+    let img = img.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let hints = rxing::DecodeHints {
+            PossibleFormats: Some([BarcodeFormat::QR_CODE].into_iter().collect()),
+            TryHarder: Some(harder),
+            ..Default::default()
+        };
+        let source = rxing::BufferedImageLuminanceSource::new(img);
+        let mut bitmap = rxing::BinaryBitmap::new(rxing::common::HybridBinarizer::new(source));
+        let mut reader = rxing::MultiFormatReader::default();
+        let result = match reader.decode_with_hints(&mut bitmap, &hints) {
+            Ok(result) => {
+                let text = result.getText().to_string();
+                if text.is_empty() { None } else { Some(text) }
+            }
+            Err(_) => None,
+        };
+        let _ = tx.send(result);
+    });
+
+    match rx.recv_timeout(timeout) {
+        Ok(result) => result,
         Err(_) => None,
     }
 }
@@ -209,30 +223,43 @@ fn autocontrast(img: &DynamicImage) -> DynamicImage {
 ///   3. Autocontrast
 ///   
 /// Returns the first successfully decoded QR code, or empty string.
-fn decode_qr_with_preprocessing(img: &DynamicImage) -> String {
-    let scalars: &[f64] = &[0.5, 0.2, 0.1, 1.0];
+fn decode_qr_with_preprocessing(img: &DynamicImage, timeout_sec: u64) -> String {
+    let scalars: &[f64] = &[0.1, 0.2, 0.5,  1.0];
     let sharpness_factors: &[f64] = &[0.1, 0.5, 2.0];
+    
+    let start = Instant::now();
+
+    let deadline = std::time::Duration::from_secs(timeout_sec);
 
     for &scalar in scalars {
         let scaled = scale_image(img, scalar);
-        let try_harder =  scalar != 1.0;
+        let try_harder =  false; // scalar != 1.0; This is massively slow!!!
+
+        let remaining = deadline.saturating_sub(start.elapsed());
+        if remaining.is_zero() { return String::new(); }
 
         // Try plain scaled
-        if let Some(qr) = try_decode_qr(&scaled, try_harder) {
+        if let Some(qr) = try_decode_qr(&scaled, try_harder, remaining) {
             return qr;
         }
 
         // Try sharpness/blur variants
         for &sharpness in sharpness_factors {
+            let remaining = deadline.saturating_sub(start.elapsed());
+            if remaining.is_zero() { return String::new(); }
+
             let adjusted = adjust_sharpness(&scaled, sharpness);
-            if let Some(qr) = try_decode_qr(&adjusted,  try_harder) {
+            if let Some(qr) = try_decode_qr(&adjusted, try_harder, remaining) {
                 return qr;
             }
         }
 
         // Try autocontrast
+        let remaining = deadline.saturating_sub(start.elapsed());
+        if remaining.is_zero() { return String::new(); }
+
         let contrasted = autocontrast(&scaled);
-        if let Some(qr) = try_decode_qr(&contrasted,  try_harder) {
+        if let Some(qr) = try_decode_qr(&contrasted, try_harder, remaining) {
             return qr;
         }
     }
@@ -359,7 +386,13 @@ fn process_single_image(image_path: &str) -> Result<ImageInfo, Error> {
     let thumbnail_data_url = format!("data:image/png;base64,{}", thumbnail_base64);
 
     // ---- 3. Scan for QR code (multi-preprocessing pipeline) --------------------
-    let qr_code = decode_qr_with_preprocessing(&img);
+    let qr_start = Instant::now();
+    let qr_code = decode_qr_with_preprocessing(&img, 10);
+    let qr_elapsed = qr_start.elapsed();
+    let name = path.file_name().unwrap().to_string_lossy();
+    if qr_elapsed.as_millis() > 2500 {
+        eprintln!("[QR slow] {}: {:.2}s (result: {:?})", name, qr_elapsed.as_secs_f64(), if qr_code.is_empty() { "none" } else { &qr_code });
+    }
 
     Ok(ImageInfo {
         path: image_path.to_string(),
@@ -481,6 +514,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![list_images, process_images, load_full_image, move_images])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

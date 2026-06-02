@@ -3,6 +3,7 @@
   import { listen } from '@tauri-apps/api/event';
   import { ask, open } from '@tauri-apps/plugin-dialog';
   import type { ImageInfo } from '../types';
+  import TableRow from './TableRow.svelte';
 
   let imageFolder = $state('');
   let outputFolder = $state('');
@@ -19,6 +20,37 @@
   let lightboxSrc = $state('');
   let lightboxAlt = $state('');
   let lightboxIndex = $state(-1);
+
+  // Virtual scroll state
+  const ROW_HEIGHT = 97;
+  const BUFFER = 30;
+  let scrollContainer: HTMLDivElement | undefined = $state();
+  let scrollTop = $state(0);
+  let containerHeight = $state(600);
+
+  let startIndex = $derived(Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - BUFFER));
+  let endIndex = $derived(Math.min(images.length, Math.ceil((scrollTop + containerHeight) / ROW_HEIGHT) + BUFFER));
+
+  function handleScroll() {
+    if (scrollContainer) {
+      scrollTop = scrollContainer.scrollTop;
+    }
+  }
+
+  function measureContainer() {
+    if (scrollContainer) {
+      containerHeight = scrollContainer.clientHeight;
+    }
+  }
+
+  $effect(() => {
+    if (scrollContainer) {
+      measureContainer();
+      const observer = new ResizeObserver(measureContainer);
+      observer.observe(scrollContainer);
+      return () => observer.disconnect();
+    }
+  });
 
   async function selectImageFolder() {
     const selected = await open({ directory: true, multiple: false });
@@ -105,13 +137,13 @@
   function focusOnMount(node: HTMLElement) { node.focus(); }
 
   // --- Lightbox ---
+  // Uses real index into images[] so scrolling never breaks the data model
   async function openLightbox(index: number) {
     lightboxIndex = index;
     const img = images[index];
     lightboxAlt = img.name;
     lightboxSrc = img.thumbnail;
     const fullSrc = await invoke<string>('load_full_image', { imagePath: img.path });
-    // Only update if we're still viewing the same image
     if (lightboxIndex === index) {
       lightboxSrc = fullSrc;
     }
@@ -134,7 +166,6 @@
   // --- QR fill from neighbour ---
   function parseDate(d: string): number | null {
     if (!d) return null;
-    // EXIF dates look like "2024-01-15 13:45:02" or "2024:01:15 13:45:02"
     const normalized = d.replace(/^(\d{4}):(\d{2}):(\d{2})/, '$1-$2-$3');
     const ms = Date.parse(normalized);
     return isNaN(ms) ? null : ms;
@@ -151,27 +182,23 @@
   function fillQrFromNeighbour(index: number) {
     if (images[index].qr_code.trim()) return;
 
-    // Check previous neighbour
     if (index > 0 && images[index - 1].qr_code.trim() && isNeighbour(images[index], images[index - 1])) {
       images[index].qr_code = images[index - 1].qr_code;
       return;
     }
 
-    // Check next neighbour
     if (index < images.length - 1 && images[index + 1].qr_code.trim() && isNeighbour(images[index], images[index + 1])) {
       images[index].qr_code = images[index + 1].qr_code;
     }
   }
 
   function autoFillAll() {
-    // Forward pass: propagate from earlier images to later ones
     for (let i = 0; i < images.length; i++) {
       if (images[i].qr_code.trim()) continue;
       if (i > 0 && images[i - 1].qr_code.trim() && isNeighbour(images[i], images[i - 1])) {
         images[i].qr_code = images[i - 1].qr_code;
       }
     }
-    // Backward pass: propagate from later images to earlier ones
     for (let i = images.length - 2; i >= 0; i--) {
       if (images[i].qr_code.trim()) continue;
       if (images[i + 1].qr_code.trim() && isNeighbour(images[i], images[i + 1])) {
@@ -179,25 +206,33 @@
       }
     }
   }
+
 </script>
 
 <style>
-  .container { padding: 1rem; font-family: sans-serif; }
-  .toolbar { margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
-  table { width: 100%; border-collapse: collapse; }
-  th, td { border: 1px solid #ddd; padding: 0.5rem; text-align: left; }
-  th { background: #f4f4f4; }
-  img.thumb { width: 80px; height: auto; }
-  .thumb-btn { background: none; border: none; padding: 0; cursor: pointer; }
-  input.qr { width: 100%; }
-  .progress-section { margin: 1rem 0; }
+  :global(html, body) { margin: 0; height: 100%; overflow: hidden; }
+  .container { padding: 1rem; font-family: sans-serif; display: flex; flex-direction: column; height: 100vh; box-sizing: border-box; }
+  .toolbar { margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+  .status { margin: 0.25rem 0; color: #555; }
+  .progress-section { margin: 0.5rem 0; }
   progress { width: 100%; height: 1.5rem; }
-  .status { margin: 0.5rem 0; color: #555; }
-  tr.missing-qr { background: #fff3cd; }
-  tr.excluded { opacity: 0.4; }
-  td.exclude-cell { width: 1%; white-space: nowrap; }
-  .exclude-btn { cursor: pointer; font-size: 1.2rem; opacity: 0.3; padding: 0.2rem 0.4rem; }
-  .exclude-btn.active { opacity: 1; }
+
+  .scroll-viewport {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    min-height: 0;
+  }
+  .scroll-spacer { position: relative; }
+  .scroll-content { position: absolute; top: 0; left: 0; right: 0; }
+
+  table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+  th, :global(td) { border: 1px solid #ddd; padding: 0.5rem; text-align: left; }
+  th { background: #f4f4f4; }
+  .col-thumb { width: 130px; }
+  .col-exclude { width: 2.5rem; }
+  .col-date { width: 170px; }
+  .col-location { width: 180px; }
 
   /* Lightbox */
   .lightbox-overlay {
@@ -257,6 +292,13 @@
 
   {#if images.length > 0}
     <table>
+      <colgroup>
+        <col class="col-thumb">
+        <col class="col-exclude">
+        <col class="col-qr">
+        <col class="col-date">
+        <col class="col-location">
+      </colgroup>
       <thead>
         <tr>
           <th>Thumb</th>
@@ -266,28 +308,32 @@
           <th>Location</th>
         </tr>
       </thead>
-      <tbody>
-        {#each images as img, i}
-          <tr class:missing-qr={!img.qr_code.trim() && !excluded[i]} class:excluded={excluded[i]}>
-            <td><button class="thumb-btn" tabindex="-1" onclick={() => openLightbox(i)}><img class="thumb" src={img.thumbnail} alt={img.name} /></button></td>
-            <td class="exclude-cell"><button class="exclude-btn" class:active={excluded[i]} tabindex="-1" title="Exclude from export" onclick={() => excluded[i] = !excluded[i]}>🗑</button></td>
-            <td>
-              <input
-                class="qr"
-                bind:value={img.qr_code}
-                placeholder="Enter QR…"
-                onfocus={() => fillQrFromNeighbour(i)}
-              />
-            </td>
-            <td>{img.date}</td>
-            <td>
-              {#if img.latitude !== null && img.longitude !== null}
-                <a href="https://www.openstreetmap.org/#map=12/{img.latitude.toFixed(6)}/{img.longitude.toFixed(6)}" target="_blank">{img.latitude.toFixed(6)} {img.longitude.toFixed(6)}</a>
-              {/if}
-            </td>
-          </tr>
-        {/each}
-      </tbody>
     </table>
+    <div class="scroll-viewport" bind:this={scrollContainer} onscroll={handleScroll}>
+      <div class="scroll-spacer" style="height: {images.length * ROW_HEIGHT}px;">
+        <div class="scroll-content" style="top: {startIndex * ROW_HEIGHT}px;">
+          <table>
+            <colgroup>
+              <col class="col-thumb">
+              <col class="col-exclude">
+              <col class="col-qr">
+              <col class="col-date">
+              <col class="col-location">
+            </colgroup>
+            <tbody>
+              {#each images.slice(startIndex, endIndex) as img, localI (img.path)}
+                <TableRow
+                  {img}
+                  index={startIndex + localI}
+                  bind:excluded={excluded[startIndex + localI]}
+                  onOpenLightbox={openLightbox}
+                  onFillQr={fillQrFromNeighbour}
+                />
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
   {/if}
 </div>
